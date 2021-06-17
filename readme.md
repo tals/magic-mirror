@@ -2,7 +2,7 @@
 This is the web client, based on Svelte + Vite + Tailwind.
 
 ```sh
-$ cd app
+$ cd website
 $ npm i
 $ npm run dev
 ```

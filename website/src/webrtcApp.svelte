@@ -1,9 +1,7 @@
 <script lang="ts">
   import { playStream, closeStream } from "./utils/webrtcUtils";
-  // import { mediaDevices } from "./utils/mediaDevices";
+  import { mediaDevices } from "./utils/mediaDevices";
   import { localStorageStore } from "./utils/storeUtils";
-  import sockette from "sockette";
-  import { fade, fly } from "svelte/transition";
   import { onMount } from "svelte";
   import {findIndex} from "lodash";
 
@@ -17,7 +15,6 @@
   let localCamera: MediaStream | undefined; // @hmr:keep
   let localStream: MediaStream | undefined; // @hmr:keep
   let remoteStream: MediaStream | undefined; // @hmr:keep
-  let canvasStream: MediaStream | undefined; // @hmr:keep
   $: console.log("xxx", remoteStream);
 
   function goLiveClicked() {
@@ -307,55 +304,10 @@
     localStream = stream;
   }
 
-  let tool = "face";
-
-  $: if (tool === "face") {
-    console.log("xxx", localCamera);
-    setLocalStream(localCamera!);
-  }
-
-  $: if (tool === "paint") {
-    setLocalStream(canvasStream!);
-  }
-
-  function onMessage(ev: MessageEvent) {
-    const data = JSON.parse(ev.data);
-    results = data;
-  }
-
-  interface Results {
-      top?: any[];
-      indexed?: any[];
-      text?: any[];
-  }
-  let results: Results = {}
-
-  // const sock = new sockette(`${SECURE ? "wss" : "ws"}://${HOST}/ws`, {
-  //   onmessage: onMessage,
-  // });
-
-  // sock.open();
-    // const sock = new WebSocket(`${SECURE ? "wss" : "ws"}://${HOST}/ws`);
-    // sock.addEventListener("message", onMessage);
-
-  function getImageUrl(r: any) {
-    // return `http://molsh-9000:8081/200/http://localhost:8080/static/${r.name}`;
-    return `${SECURE ? "https" : "http"}://${HOST}/static/${r.key}`;
-  }
-
-  async function shuffleClicked() {
-    await fetch(`${SECURE ? "https" : "http"}://${HOST}/shuffle`, {
-      mode: "cors",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      method: "POST",
-    });
-  }
+  $: setLocalStream(localCamera!);
 
   $: if(iceConnectionState === "disconnected") {
     window.location.reload();
-
   }
 
   onMount(async () => {
@@ -374,13 +326,13 @@
       return;
     }
 
-    // let idx = findIndex($mediaDevices.video, x => x.deviceId === $selectedDeviceStore);
-    // if (idx === -1) {
-    //   idx = 0;
-    // }
+    let idx = findIndex($mediaDevices.video, x => x.deviceId === $selectedDeviceStore);
+    if (idx === -1) {
+      idx = 0;
+    }
 
-    // idx = (idx + 1) % $mediaDevices.video.length;
-    // $selectedDeviceStore = $mediaDevices.video[idx].deviceId;
+    idx = (idx + 1) % $mediaDevices.video.length;
+    $selectedDeviceStore = $mediaDevices.video[idx].deviceId;
   }
 </script>
 
@@ -417,23 +369,4 @@
       </div>
     </div>
   </div>
-  <div>
-    {#each (results?.text ?? []) as e}
-    <div>{e.key}: {e.score.toFixed(2)}</div>
-    {/each}
-      
-  </div>
 </div>
-
-<style>
-  .container-lg {
-    height: 50%;
-  }
-  .container-sm {
-    height: 25%;
-  }
-  .thumbnail {
-    width: 108px;
-    height: 108px;
-  }
-</style>

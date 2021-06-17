@@ -1,6 +1,5 @@
 import { readable, Readable } from "svelte/store";
 import { domEventHandler } from "../utils/storeUtils";
-import { safePromiseFunc, promiseWithTimeout } from "./promiseUtils";
 
 export type MediaDevicesData = {
   hasPermissions: boolean;

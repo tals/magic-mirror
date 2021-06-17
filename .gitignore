@@ -1,0 +1,8 @@
+.DS_Store
+*.egg-info
+.ipynb_checkpoints/
+*.npy
+*.zip
+server/arXiv2020-RIFE
+*.sqlite3
+.vscode

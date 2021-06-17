@@ -1,0 +1,8 @@
+photoboo.app {
+    reverse_proxy localhost:9999
+}
+
+mm.photoboo.app  {
+    reverse_proxy localhost:9999
+}
+

@@ -358,6 +358,7 @@ class RifeInfer:
             timer.on_start()
 
             img = self.pending
+            self.pending = None
 
             # optimistic
             frame_code = get_clip_code(img)

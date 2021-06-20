@@ -6,18 +6,15 @@
   import {findIndex} from "lodash";
 
   const selectedDeviceStore = localStorageStore("videoDevice", "");
-  const HOST = "molsh-9000:9999";
-  const SECURE = false;
-
-  // const HOST = "mm.photoboo.app";
-  // const SECURE = true;
+  // const ENDPOINT = "https://mm.photoboo.app";
+  const ENDPOINT = "https://tals-research.photoboo.app";
 
   let localCamera: MediaStream | undefined; // @hmr:keep
   let localStream: MediaStream | undefined; // @hmr:keep
   let remoteStream: MediaStream | undefined; // @hmr:keep
   $: console.log("xxx", remoteStream);
 
-  function goLiveClicked() {
+  function goLive() {
     if (!localStream) return;
     start(localStream);
   }
@@ -34,6 +31,7 @@
         width: 360,
         height: 360,
       },
+      audio: false,
     });
     localCamera.getVideoTracks()[0];
 
@@ -140,17 +138,19 @@
     await waitForState(pc);
     const offer = pc.localDescription!;
     const audioCodec = "default";
+
+    let { sdp } = offer;
     if (audioCodec !== "default") {
-      offer.sdp = sdpFilterCodec("audio", audioCodec, offer.sdp);
+      sdp = sdpFilterCodec("audio", audioCodec, sdp);
     }
     const videoCodec = "default";
     if (videoCodec !== "default") {
-      offer.sdp = sdpFilterCodec("video", videoCodec, offer.sdp);
+      sdp = sdpFilterCodec("video", videoCodec, sdp);
     }
 
-    const res = await fetch(`${SECURE ? "https" : "http"}://${HOST}/offer`, {
+    const res = await fetch(`${ENDPOINT}/offer`, {
       body: JSON.stringify({
-        sdp: offer.sdp,
+        sdp,
         type: offer.type,
       }),
       mode: "cors",
@@ -311,7 +311,7 @@
   }
 
   onMount(async () => {
-    setTimeout(goLiveClicked, 1000);
+    setTimeout(goLive, 1000);
     setTimeout(runWatchdog, 10000);
   })
 
@@ -351,22 +351,29 @@
         class=" overflow-hidden relative flex items-center justify-center "
         style="width: 100%; height: calc(100vh - 45px);"
       >
+      <div class="h-full flex  justify-center flex-col p-4">
         <video
           use:playStream={remoteStream}
           muted
           playsInline
           autoplay
-          class="object-contain  block  bg-gray-700 w-full h-full"
+          class="object-contain  block  bg-gray-700 h-full mirror filter sepia"
         />
+      </div>
         <video
-          on:click={goLiveClicked}
+          on:click={goLive}
           use:playStream={localStream}
           muted
           playsInline
           autoplay
-          class="h-32 w-32 absolute bottom-4 left-4 object-contain rounded block overflow-hidden bg-gray-700  "
+          class="h-32 w-32 absolute bottom-4 left-4 object-contain rounded block overflow-hidden bg-gray-700 mirror"
         />
       </div>
     </div>
   </div>
 </div>
+<style>
+    video.mirror {
+    transform: scaleX(-1);
+  }
+</style>

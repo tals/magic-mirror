@@ -1,10 +1,10 @@
-# sys.path.insert(0, "/home/tal/dev/chroma/clip_search")
+record_to_disk = True
+
+import functools
 import argparse
 import asyncio
-import json
+from inference import get_clip_code
 import logging
-import os
-import ssl
 import sys
 import time
 import uuid
@@ -12,15 +12,14 @@ from pathlib import Path
 from threading import Thread
 from typing import *
 
-import clip
 import cv2
-import kornia.augmentation as K
 import numpy as np
 import torch
 import torchvision.transforms.functional as TF
 from aiohttp import web
 from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription
-from aiortc.contrib.media import MediaBlackhole, MediaPlayer, MediaRecorder, MediaRelay
+from aiortc.contrib.media import MediaBlackhole, MediaRelay
+from aiortc_utils import MediaRecorder
 from av import VideoFrame
 from fastai.vision.core import *
 from fastapi import Body, FastAPI, Request, WebSocket
@@ -30,26 +29,18 @@ from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from PIL import Image
 from pydantic import BaseModel
-from torchvision.transforms import CenterCrop, Compose, Normalize, Resize, ToTensor
+from image_index import DATASET_PATH, QueryResultEntry
 
 from interpolation_rife import rife_infer
 from image_index import UserImageIndex
 
 image_pool = UserImageIndex()
 
-# works with np, but the clip one assumes PIL
-clip_norm = Normalize(
-    (0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711)
-)
-# clip_model, _ = clip.load("ViT-B/32", jit=False)
-clip_model, _ = clip.load("ViT-B/32")
-clip_res = 224
 
-
-ROOT = os.path.dirname(__file__)
-# app = FastAPI(openapi_url=None)
-app = FastAPI()
-app.mount("/assets", StaticFiles(directory="/home/tal/dev/poo/assets"), name="assets")
+PY_ROOT = Path(__file__).parent
+app = FastAPI(openapi_url=None)
+# app = FastAPI()
+SERVE_WEBSITE = False
 
 app.add_middleware(
     CORSMiddleware,
@@ -132,10 +123,13 @@ class VideoTransformTrack(MediaStreamTrack):
         else:
             return frame
 
+if SERVE_WEBSITE:
+    WEBSITE_ROOT = "../website/dist"
+    app.mount("/assets", StaticFiles(directory=WEBSITE_ROOT / "assets"), name="assets")
 
-@app.get("/")
-async def index():
-    return FileResponse("/home/tal/dev/poo/index.html")
+    @app.get("/")
+    async def index():
+        return FileResponse(WEBSITE_ROOT / "index.html")
 
 
 class Offer(BaseModel):
@@ -143,8 +137,10 @@ class Offer(BaseModel):
     type: Any
 
 
+recorder = None
 @app.post("/offer")
 async def offer(offer: Offer, request: Request):
+    global recorder
     print("offer recieved")
     offer = RTCSessionDescription(sdp=offer.sdp, type=offer.type)
 
@@ -155,12 +151,17 @@ async def offer(offer: Offer, request: Request):
     def log_info(msg, *args):
         logger.info(pc_id + " " + msg, *args)
 
-    log_info("Created for %s", request.client.host)
+    log_info("Created for %s" % request.client.host)
 
     # prepare local media
     # player = MediaPlayer(os.path.join(ROOT, "demo-instruct.wav"))
-    if args.record_to:
-        recorder = MediaRecorder(args.record_to)
+    video_dir = DATASET_PATH / "videos"
+    video_dir.mkdir(parents=True, exist_ok=True)
+    prefix = datetime.now().strftime("%Y%m%d-%H%M%S")
+
+    
+    if record_to_disk:
+        recorder = MediaRecorder(str(video_dir / (prefix + ".mp4")))
     else:
         recorder = MediaBlackhole()
 
@@ -173,7 +174,7 @@ async def offer(offer: Offer, request: Request):
 
     @pc.on("connectionstatechange")
     async def on_connectionstatechange():
-        log_info("Connection state is %s", pc.connectionState)
+        log_info(f"Connection state is {pc.connectionState}")
         if pc.connectionState == "failed":
             await pc.close()
             pcs.discard(pc)
@@ -181,23 +182,21 @@ async def offer(offer: Offer, request: Request):
     @pc.on("track")
     def on_track(track):
         global transform_track
-        log_info("Track %s received", track.kind)
+        log_info(f"Track {track.kind} received")
 
         if track.kind == "audio":
             # pc.addTrack(player.audio)
-            # recorder.addTrack(track)
-            ...
+            recorder.addTrack(track)
         elif track.kind == "video":
+            recorder.addTrack(relay.subscribe(track))
             transform_track = VideoTransformTrack(
                 relay.subscribe(track), transform=None
             )
             pc.addTrack(transform_track)
-            if args.record_to:
-                recorder.addTrack(relay.subscribe(track))
 
         @track.on("ended")
         async def on_ended():
-            log_info("Track %s ended", track.kind)
+            log_info(f"Track {track.kind} ended")
             await recorder.stop()
 
     # handle offer
@@ -212,11 +211,14 @@ async def offer(offer: Offer, request: Request):
 
 
 @app.on_event("shutdown")
-async def on_shutdown(app):
+async def on_shutdown():
+    print("Preparing to shutdown.")
     # close peer connections
     coros = [pc.close() for pc in pcs]
+    print("Preparing to shutdown: waiting on PCs")
     await asyncio.gather(*coros)
     pcs.clear()
+    print("Shut down!")
 
 
 def main(raw_args=[]):
@@ -245,58 +247,6 @@ def main(raw_args=[]):
         logging.basicConfig(level=logging.INFO)
 
 
-def to_tensor(x):
-    if isinstance(x, torch.Tensor):
-        return x
-
-    return TF.to_tensor(x)
-
-
-# slightly modified from OpenAI's code, so that it works with np tensors
-# see https://github.com/openai/CLIP/blob/cfcffb90e69f37bf2ff1e988237a0fbe41f33c04/clip/clip.py#L58
-clip_preprocess = Compose(
-    [
-        to_tensor,
-        Resize(clip_res, interpolation=Image.BICUBIC),
-        CenterCrop(clip_res),
-        clip_norm,
-    ]
-)
-
-
-def make_aug(x: torch.Tensor):
-    if x.ndim < 4:
-        x = x[None]
-
-    x = x.repeat(8, 1, 1, 1)
-    x = K.functional.random_affine(x, 30, (0.2, 0.2), (0.9, 1.5), [0.1, 0.4])
-    x = K.functional.color_jitter(x, 0.2, 0.3, 0.2, 0.3)
-    return x
-
-
-@torch.no_grad()
-def get_clip_code(img, use_aug=False):
-    x = TF.to_tensor(img).cuda()
-    if use_aug:
-        x = make_aug(x)
-    else:
-        x = x[None]
-    x = clip_preprocess(x)
-    x = clip_infer(x)
-
-    if use_aug:
-        x = x.mean(axis=0, keepdim=True)
-
-    # normalize since we do dot products lookups
-    x /= x.norm()
-
-    return x
-
-
-def clip_infer(x):
-    x = clip_model.encode_image(x)
-    return x
-
 
 def pil_to_webrtc(img):
     n_px = 360
@@ -310,17 +260,11 @@ def pil_to_webrtc(img):
     return img
 
 
-cached_images = {}
 
-
+@functools.lru_cache(maxsize=1000)
 def get_image_for_webrtc(file):
-    # TODO use lru
-    if file in cached_images:
-        return cached_images[file]
-
-    x = PILImage.create(file)
+    x = Image.open(file)
     x = pil_to_webrtc(x)
-    cached_images[file] = x
 
     return x
 
@@ -340,6 +284,9 @@ class Timer:
         self._start = datetime.now()
 
     def print_stats(self):
+        if not self.samples:
+            return
+            
         samples = np.array(self.samples) * 1000
         print(f"median {np.median(samples):n} min: {np.min(samples):n} max: {np.max(samples):n}")
 
@@ -347,6 +294,28 @@ class Timer:
         self.samples = []
         self._start = datetime.now()
 
+class RunningStats:
+    def __init__(self, size):
+        self.size = size
+        self.ema_alpha = 2/(size+1)
+        self.ema = None
+        self.window = []
+
+    def add(self, x: np.ndarray):
+        self.window.append(x)
+        if len(self.window) > self.size:
+            self.window = self.window[1:]
+
+        if self.ema is None:
+            self.ema = x
+        else:
+            self.ema = self.ema_alpha * x + (1 - self.ema_alpha) * self.ema
+
+    def get_sma(self):
+        return np.mean(self.window, axis=0)
+
+    def get_ema(self):
+        return self.ema
 
 class RifeInfer:
     """
@@ -363,6 +332,7 @@ class RifeInfer:
         self.frames = []
 
         self.pic = None
+        self.last_used = None
         # currently playing
         self.prev = None
         self.target = None
@@ -375,6 +345,11 @@ class RifeInfer:
     def run(self):
         infer_count = 0
         timer = Timer()
+        last_winner: Optional[QueryResultEntry] = None
+        last_winner_dt = datetime.now()
+
+        running_stats = RunningStats(5)
+        last_shuffle_dt = datetime.now()
         while True:
             if self.pending is None:
                 time.sleep(1 / 60)
@@ -385,12 +360,21 @@ class RifeInfer:
             img = self.pending
 
             # optimistic
-            code = get_clip_code(img)
-            results = image_pool.query(code)
+            frame_code = get_clip_code(img)
+            running_stats.add(frame_code.cpu().numpy())
+
+            # not sure if i liked the smoothing
+            # smoothed_code = torch.from_numpy(running_stats.get_ema()).cuda()
+            smoothed_code = frame_code 
+
+            results = image_pool.query(smoothed_code)
             infer_count += 1
+
+            # write every 10th frame
             if infer_count % 10 == 0:
-                print("Adding!")
-                image_pool.add(img=img, emb=code)
+                # print("Adding!")
+                image_pool.add(img=img, emb=frame_code)
+
             if infer_count % 30 == 0:
                 timer.print_stats()
                 timer.reset()
@@ -399,7 +383,27 @@ class RifeInfer:
                 # print("No results :(")
                 continue
 
-            pic = get_image_for_webrtc(results[0].path)
+            winner = results[0]
+            now = datetime.now()
+
+            if (now - last_shuffle_dt).total_seconds() >= 1:
+                last_shuffle_dt = now
+                last_winner = winner
+                image_pool.shuffle()
+
+
+            if last_winner:
+                last_score = last_winner.get_score_from(smoothed_code)
+                if winner.score - last_score > 2e-2 or (now - last_winner_dt).total_seconds() >= .1:
+                    last_winner = winner
+                    last_winner_dt = now
+                else:
+                    # print("Overriding, D was", winner.score - last_score)
+                    winner = last_winner
+            else:
+                last_winner = winner
+                
+            pic = get_image_for_webrtc(winner.path)
             self.pic = pic
 
             self.next_target = TF.to_tensor(pic)
@@ -407,6 +411,7 @@ class RifeInfer:
                 frames = rife_infer(
                     self.target[None].cuda(), self.next_target[None].cuda()
                 )
+                # TODO: make npy tensors
                 frames = [TF.to_pil_image(x.squeeze()) for x in frames]
                 self.upcoming = frames
             else:
@@ -416,21 +421,19 @@ class RifeInfer:
             
 
     def get_result(self):
-        # return self.pic
+        if not self.frames:
+            self.frames = self.upcoming
+            self.prev = self.target
+            self.target = self.next_target
 
-        # TODO figure this out
         if self.frames:
             x = self.frames.pop(0)
+            # TODO get rid of this conversion lol
             x = pil_to_webrtc(x)
+            self.last_used = x
             return x
-
-        self.frames = self.upcoming
-        self.prev = self.target
-        self.target = self.next_target
-        if self.frames:
-            x = self.frames.pop(0)
-            x = pil_to_webrtc(x)
-            return x
+        else:
+            return self.last_used
 
     def put_frame(self, img):
         self.pending = img

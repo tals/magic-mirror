@@ -3,6 +3,11 @@ torch==1.7.1
 torchvision==0.8.2
 Pillow==8.2.0
 -e git+https://github.com/openai/CLIP.git@cfcffb90e69f37bf2ff1e988237a0fbe41f33c04#egg=clip
+opencv-python==4.5.2.54
+kornia==0.5.4
+
+# webrtc
+aiortc==1.2.0
 
 # web
 fastapi==0.63.0
@@ -12,6 +17,7 @@ uvloop==0.15.2
 aiohttp==3.7.4.post0
 aiohttp-cors==0.7.0
 aiohttp-requests==0.1.3
+aiofiles==0.6.0
 
 # misc
 tqdm==4.60.0

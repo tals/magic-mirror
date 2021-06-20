@@ -15,8 +15,19 @@ from tqdm.auto import tqdm
 
 
 class QueryResultEntry(BaseModel):
+    class Config:
+        arbitrary_types_allowed = True
+
     path: Path
     score: float
+    idx: int
+    emb: torch.Tensor
+
+    def get_score_from(self, emb: torch.Tensor):
+        x = self.emb @ emb.float().squeeze()
+        x = x.item()
+
+        return x
         
 class PendingImage(BaseModel):
     class Config:
@@ -50,7 +61,7 @@ class OpenImageIndex:
         x = self.pool @ emb.float().T
         x = x.squeeze().topk(topk, dim=0)
         I, D = x.indices.cpu().numpy(), x.values.cpu().numpy()
-        D = (D * 100).astype(np.uint8)
+        # D = (D * 100).astype(np.uint8)
 
         keys = [self.keys[x.item()] for x in I.squeeze()]
         results = []
@@ -58,6 +69,8 @@ class OpenImageIndex:
             results.append(QueryResultEntry(
                 path=self.path / self.filenames[i],
                 score=score,
+                emb=self.pool[i],
+                idx=i,
             ))
 
         return results
@@ -67,14 +80,16 @@ class OpenImageIndex:
 
 
 SHARD_SIZE = 100_000
-DATASET_PATH = Path("/home/tal/datasets/magic_mirror")
-DATASET_PATH = Path("/tmp/stupid")
+DATASET_PATH = Path("~/datasets/magic_mirror_the_archive").expanduser()
+# DATASET_PATH = Path("/tmp/stupid")
 DATASET_PATH.mkdir(exist_ok=True, parents=True)
 
 
 class UserImageIndex:
     """Shitty index lol"""
     pending: List[PendingImage]
+    path: Path
+    idxs: torch.IntTensor
     
     def __init__(self, path=DATASET_PATH, autoflush=True, device=torch.device("cuda")):
         self.path = path
@@ -98,6 +113,7 @@ class UserImageIndex:
                 break
         # keep track of where its safe to query from
         self.safe_idx = self.pool_size
+        self.shuffle()
 
         self.worker_thread = Thread(target=self._write_worker, daemon=True)
         if autoflush:
@@ -108,6 +124,15 @@ class UserImageIndex:
             time.sleep(5)
             self._flush()
 
+    def shuffle(self):
+        k = 1000
+        query_edge = max(100, self.safe_idx - 10 * 60)
+        query_edge = min(query_edge, self.safe_idx)
+        # print("query_edge", query_edge)
+        perm = torch.randperm(query_edge)
+        self.idxs = perm[:k]
+        # print(self.idxs)
+
     def _flush(self):
         if not self.pending:
             return
@@ -116,7 +141,7 @@ class UserImageIndex:
         pending: List[PendingImage] = self.pending
         self.pending = []
 
-        print("Flushing", len(pending))
+        # print("Flushing", len(pending))
         for pi in pending:
             idx = self.pool_size
             self.pool_size += 1
@@ -130,7 +155,8 @@ class UserImageIndex:
             img = Image.fromarray(pi.img, "RGB")
             img.save(self.path / key)
 
-        for d in tqdm(dirty, desc="Saving tiles"):
+        # for d in tqdm(dirty, desc="Saving tiles"):
+        for d in dirty:
             self._write_dirty(d)
 
         self.safe_idx = self.pool_size
@@ -139,10 +165,15 @@ class UserImageIndex:
         start = tile_idx * SHARD_SIZE
         end = min(self.pool_size, (tile_idx + 1) * SHARD_SIZE)
 
-        torch.save(self.pool[start:end].cpu(), self.path / f"tile_{tile_idx:08}.pt")
+        # write to a temp to avoid corrupting data
+        target_file = self.path / f"tile_{tile_idx:08}.pt"
+        target_file_tmp: Path = target_file.with_suffix(".tmp")
+        torch.save(self.pool[start:end].cpu(), target_file_tmp)
+        target_file_tmp.rename(target_file)
+
         
     @torch.no_grad()
-    def query(self, emb, topk=5):
+    def query(self, emb, topk=5) -> List[QueryResultEntry]:
         emb = torchify(emb)
         if emb.ndim == 1:
             emb = emb[None]
@@ -150,21 +181,25 @@ class UserImageIndex:
         query_edge = max(100, self.safe_idx - 10 * 60)
         query_edge = min(query_edge, self.safe_idx)
         x = self.pool[:query_edge] @ emb.float().T
+        x = x[self.idxs]
         x = x.topk(min(topk, len(x)), dim=0)
         I, D = x.indices.cpu().numpy(), x.values.cpu().numpy()
-        D = (D * 100).astype(np.uint8)
+        # D = (D * 100).astype(np.uint8)
         if len(I) == 0:
             return []
 
         results = []
         for idx, score in zip(I, D):
-            idx = int(idx)
+            idx = self.idxs[int(idx)]
             key = f"{idx:08}.jpg"
             results.append(QueryResultEntry(
                 path=self.path / key,
                 score=score,
+                emb=self.pool[idx],
+                idx=idx,
             ))
 
+        # print(results[0].idx, results[0].score)
         return results
 
     def add(self, img, emb):

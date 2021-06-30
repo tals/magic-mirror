@@ -6,13 +6,11 @@
   import {findIndex} from "lodash";
 
   const selectedDeviceStore = localStorageStore("videoDevice", "");
-  // const ENDPOINT = "https://mm.photoboo.app";
-  const ENDPOINT = "https://tals-research.photoboo.app";
+  export let endpoint: string;
 
   let localCamera: MediaStream | undefined; // @hmr:keep
   let localStream: MediaStream | undefined; // @hmr:keep
   let remoteStream: MediaStream | undefined; // @hmr:keep
-  $: console.log("xxx", remoteStream);
 
   function goLive() {
     if (!localStream) return;
@@ -148,7 +146,7 @@
       sdp = sdpFilterCodec("video", videoCodec, sdp);
     }
 
-    const res = await fetch(`${ENDPOINT}/offer`, {
+    const res = await fetch(`${endpoint}/offer`, {
       body: JSON.stringify({
         sdp,
         type: offer.type,
@@ -337,8 +335,9 @@
 </script>
 
 <svelte:window on:keydown={onKeyDown}/>
-<div style="height: 100vh; " class="bg-gray-700 " >
+<div style="height: 100vh;" >
   <div class="px-2 border-b border-gray-500 py-2 text-xs fixed z-50 w-full text-gray-200">
+    Using {endpoint}: 
     {signalingState}
     {iceConnectionState}
   </div>
